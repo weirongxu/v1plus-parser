@@ -3,6 +3,7 @@ module V1plusParser
     ) where
 
 import OutputJson
+import System.IO
 import System.Process
 import Data.List (isPrefixOf)
 import Text.ParserCombinators.ReadP
@@ -79,8 +80,11 @@ v1plusParser = do
   return $ V1plusData numbers articles alarts
 
 readAndIconvFile :: FilePath -> IO String
-readAndIconvFile filepath = readProcess "iconv"
-  ["-sc", filepath, "-f", "gb18030", "-t", "utf8"] ""
+readAndIconvFile filepath = do
+  (_, Just stdout, _, _) <- createProcess (proc "iconv"
+    (["-sc", "-f", "gb18030", "-t", "utf8", filepath]))
+      { std_out = CreatePipe }
+  hGetContents stdout
 
 parse :: FilePath -> Bool -> IO ()
 parse filepath isPretty = do
