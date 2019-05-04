@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3be50183436024ab6916df82f38e47b6feab76883cb01daf3002632445f4dad5
+-- hash: f18262538c9e86afe4d25751f57c41d2d6a53f9d8583bbdce7b909d9b8776f51
 
 name:           v1plus-parser
 version:        0.1.0.0
@@ -35,10 +35,12 @@ library
   build-depends:
       aeson
     , aeson-pretty
+    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , optparse-applicative
     , process
+    , text
     , utf8-string
   default-language: Haskell2010
 
@@ -52,10 +54,12 @@ executable v1plus-parser
   build-depends:
       aeson
     , aeson-pretty
+    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , optparse-applicative
     , process
+    , text
     , utf8-string
     , v1plus-parser
   default-language: Haskell2010
@@ -71,10 +75,12 @@ test-suite v1plus-parser-test
   build-depends:
       aeson
     , aeson-pretty
+    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , optparse-applicative
     , process
+    , text
     , utf8-string
     , v1plus-parser
   default-language: Haskell2010

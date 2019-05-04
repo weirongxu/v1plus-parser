@@ -20,8 +20,13 @@ data V1plusData = V1plusData
 
 data V1plusNumber = V1plusNumber
     { name :: String
+    , phone :: String
     , number :: String
+    , mail :: String
+    , company :: String
     , address :: String
+    , postalCode :: String
+    , remark :: String
     } deriving (Generic, Show)
 
 data V1plusArticle = V1plusArticle

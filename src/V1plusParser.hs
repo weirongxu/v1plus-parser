@@ -1,94 +1,164 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 module V1plusParser
     ( parse
     ) where
 
+import Prelude as PRE hiding (readFile)
 import OutputJson
-import System.IO
 import System.Process
-import Data.List (isPrefixOf)
-import Text.ParserCombinators.ReadP
-import Data.ByteString.Lazy.UTF8
+import Control.Applicative
+import Data.Bits (finiteBitSize)
+import Data.ByteString (ByteString, readFile, hPutStr, hGetContents)
+import Data.Char
+import qualified Data.Text as T
+import qualified Data.Text.Internal.Builder as TB
+import qualified Data.Text.Lazy as TL
+import qualified Data.ByteString.Internal as BI
+import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.Attoparsec.Text as PT
+import qualified Data.Attoparsec.ByteString.Char8 as P8
+import Data.ByteString.Lazy.UTF8 hiding (ByteString)
 import Data.Aeson
 import Data.Aeson.Encode.Pretty
 
-notNul :: Char -> Bool
-notNul = (/=) '\NUL'
+parserError :: String -> String -> [String] -> String -> IO a
+parserError prefix i es desc =
+  let sep = "\n" in
+  fail $ prefix <> " error: " <>
+    i <> sep <> show es <> sep <> desc
 
-notNulP :: ReadP String
-notNulP = munch notNul
+gbk2utf8 :: ByteString -> IO String
+gbk2utf8 s = do
+  (Just stdin, Just stdout, _, _) <- createProcess (proc "iconv"
+    ["-sc", "-f", "gb18030", "-t", "utf8"])
+      { std_out = CreatePipe
+      , std_in = CreatePipe }
+  hPutStr stdin s
+  r <- hGetContents stdout
+  return $ toString $ BL.fromStrict r
 
-stringP :: ReadP String
-stringP = do s <- notNulP; char '\NUL'; return s
+convertedParser :: (Int, Int, Int) -> PT.Parser V1plusData
+convertedParser (numberSize, articleSize, alartSize) = parser
+  where
+    parser :: PT.Parser V1plusData
+    parser = do
+      numbers <- numbersParser numberSize
+      articles <- articlesParser articleSize
+      alarts <- alartsParser alartSize
+      return $ V1plusData numbers articles alarts
 
-rangeP :: Int -> Int -> ReadP Char -> ReadP String
-rangeP min max parser = foldl1 (+++) $ map (`count` parser) [min..max]
+    stringnParser :: Int -> PT.Parser [String]
+    stringnParser n = PT.count n $ PT.manyTill PT.anyChar $ PT.string "\NUL\NUL\NUL"
 
-blockP :: ReadP String
-blockP = do
-  ss <- count 2 sectionP
-  return $ foldl1 (<>) ss
+    numbersParser :: Int -> PT.Parser [V1plusNumber]
+    numbersParser n = PT.count n numberParser
 
-sectionP :: ReadP String
-sectionP = do
-  rand <- rangeP 0 2 (satisfy notNul)
-  end <- string "\NUL\NUL" +++ string "\NUL\NUL\NUL"
-  return $ rand <> end
+    numberParser :: PT.Parser V1plusNumber
+    numberParser = do
+      (name:phone:number:mail:company:address:postalCode:remark:_) <- stringnParser 8
+      return $ V1plusNumber
+        name phone number mail company address postalCode remark
 
-sepBySectionP :: Int -> ReadP [String]
-sepBySectionP n = count n $ do sectionP; stringP
+    articlesParser :: Int -> PT.Parser [V1plusArticle]
+    articlesParser n = PT.count n articleParser
 
-exceptNextBlockP :: ReadP a -> ReadP a
-exceptNextBlockP a = do
-  s <- look
-  if null $ readP_to_S blockP s
-  then a
-  else pfail
+    articleParser :: PT.Parser V1plusArticle
+    articleParser = do
+      (title:content:_) <- stringnParser 2
+      return $ V1plusArticle
+        title content
 
-numberParser :: ReadP V1plusNumber
-numberParser = do
-  (name:number:_:_:_:address:_:remark:_) <- sepBySectionP 8
-  return $ V1plusNumber name number address
+    alartsParser :: Int -> PT.Parser [V1plusAlart]
+    alartsParser n = PT.count n alartParser
 
-numbersParser :: ReadP [V1plusNumber]
-numbersParser = many $ exceptNextBlockP numberParser
+    alartParser :: PT.Parser V1plusAlart
+    alartParser = do
+      (state:at:date:time:content:_) <- stringnParser 5
+      let state' = if state == "关" then V1plusAlartStateOff else V1plusAlartStateOn
+      return $ V1plusAlart
+        state' at date time content
 
-articleParser :: ReadP V1plusArticle
-articleParser = do
-  (title:content:_) <- sepBySectionP 2
-  return $ V1plusArticle title content
+convert :: [[[ByteString]]] -> IO V1plusData
+convert sss = do
+  s <- gbk2utf8 $ packs sss
+  let s' = TL.toStrict $ TB.toLazyText $ TB.fromString s
+  let maxs = (PRE.length $ sss!!0, PRE.length $ sss!!1, PRE.length $ sss!!2)
+  case PT.parse (convertedParser maxs) s' of
+    (PT.Done i v1plus) -> return v1plus
+    (PT.Partial f) -> fail "convert parser error partial"
+    (PT.Fail i es desc) -> parserError "convert parser" (T.unpack i) es desc
+  where
+    sep = "\NUL\NUL\NUL" :: ByteString
+    packs :: [[[ByteString]]] -> ByteString
+    packs sss = (join' sep . map (join' sep . map (join' sep))) sss <> sep
+    join' :: ByteString -> [ByteString] -> ByteString
+    join' = B.intercalate
 
-articlesParser :: ReadP [V1plusArticle]
-articlesParser = many $ exceptNextBlockP articleParser
-
-alartParser :: ReadP V1plusAlart
-alartParser = do
-  (state:at:date:time:content:_) <- sepBySectionP 5
-  let state' = if state == "关" then V1plusAlartStateOff else V1plusAlartStateOn
-  return $ V1plusAlart state' at date time content
-
-alartsParser :: ReadP [V1plusAlart]
-alartsParser = many alartParser
-
-v1plusParser :: ReadP V1plusData
+v1plusParser :: P8.Parser (IO V1plusData)
 v1plusParser = do
-  string "OZPCDATA\NUL\NUL\NUL\NUL\NUL\002\NUL\NUL\NUL"
-  numbers <- numbersParser
-  blockP
-  articles <- articlesParser
-  blockP
-  alarts <- alartsParser
-  return $ V1plusData numbers articles alarts
+    P8.string "OZPCDATA\NUL"
+    int32P -- equal int 0
+    numberCount <- int32P
+    numbers <- numbersP numberCount
+    int32P -- equal int 1
+    articleCount <- int32P
+    articles <- articlesP articleCount
+    int32P -- equal int 2
+    alartCount <- int32P
+    alarts <- alartsP alartCount
+    return $ convert [numbers, articles, alarts]
+  where
+    binaryInt :: ByteString -> Int
+    binaryInt s = getInt $ B.foldl add (1, 0) s
+      where
+        add :: (Int, Int) -> Char -> (Int, Int)
+        add (base, result) c = (
+            base * 256,
+            result + base * ord c
+          )
+        getInt (_, result) = result
 
-readAndIconvFile :: FilePath -> IO String
-readAndIconvFile filepath = do
-  (_, Just stdout, _, _) <- createProcess (proc "iconv"
-    (["-sc", "-f", "gb18030", "-t", "utf8", filepath]))
-      { std_out = CreatePipe }
-  hGetContents stdout
+    int32P :: P8.Parser Int
+    int32P = do
+      int32bin <- P8.take 4
+      return $ binaryInt int32bin
+
+    stringP :: P8.Parser ByteString
+    stringP = do
+      size <- int32P
+      s <- P8.take $ size - 1
+      P8.anyChar
+      return s
+
+    numberParser :: P8.Parser [ByteString]
+    numberParser = P8.count 8 stringP
+
+    numbersP :: Int -> P8.Parser [[ByteString]]
+    numbersP n = P8.count n numberParser
+
+    articleParser :: P8.Parser [ByteString]
+    articleParser = P8.count 2 stringP
+
+    articlesP :: Int -> P8.Parser [[ByteString]]
+    articlesP n = P8.count n articleParser
+
+    alartParser :: P8.Parser [ByteString]
+    alartParser = P8.count 5 stringP
+
+    alartsP :: Int -> P8.Parser [[ByteString]]
+    alartsP n = P8.count n alartParser
 
 parse :: FilePath -> Bool -> IO ()
 parse filepath isPretty = do
-  cont <- readAndIconvFile filepath
-  let s = readP_to_S v1plusParser cont
-  putStrLn $ toString $ encodeJSON $ fst $ last s
+    cont <- readFile filepath
+    case P8.parse v1plusParser cont of
+      (PT.Done i v1plus) -> do
+        v1plus' <- v1plus
+        putStrLn $ toString $ encodeJSON v1plus'
+        return ()
+      (PT.Partial f) -> fail "parser error partial"
+      (PT.Fail i es desc) -> parserError "parser" (B.unpack i) es desc
   where encodeJSON = if isPretty then encodePretty else encode
